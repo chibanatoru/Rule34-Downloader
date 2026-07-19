@@ -20,3 +20,7 @@ To generate an API key, visit:
 https://rule34.xxx/index.php?page=account&s=options
 
 A Rule34 account is required to generate an API key.
+
+## Notes 
+
+Please install the required Python libraries
