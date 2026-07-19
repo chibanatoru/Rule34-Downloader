@@ -17,6 +17,6 @@ https://github.com/visiuun/PyR34-Downloader
 
 To generate an API key, visit:
 
-https://api.rule34.xxx/index.php?page=dapi&s=post&q=index&json=1
+https://rule34.xxx/index.php?page=account&s=options
 
 A Rule34 account is required to generate an API key.
