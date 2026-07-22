@@ -49,10 +49,11 @@ def download_media(tags, output_folder, limit=100, create_cbz=False):
     downloaded_files = []
     downloaded = 0
 
-  
     session = requests.Session()
-    retries = Retry(total=3, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
-    session.mount('https://', HTTPAdapter(max_retries=retries))
+    retries = Retry(total=5, backoff_factor=1.5, status_forcelist=[500, 502, 503, 504, 429])
+    adapter = HTTPAdapter(max_retries=retries, pool_connections=10, pool_maxsize=10)
+    session.mount('https://', adapter)
+    session.mount('http://', adapter)
     
     for i, post in enumerate(posts, start=1):
         try:
@@ -67,40 +68,77 @@ def download_media(tags, output_folder, limit=100, create_cbz=False):
             media_path = os.path.join(tag_folder, media_name)
             
             print(f"\n{Fore.CYAN}Downloading: {media_name}{Style.RESET_ALL}")
-            
-            with open(media_path, "wb") as f:
-                r = session.get(media_url, stream=True, timeout=120)  
-                r.raise_for_status()
-                
-                total_size = int(r.headers.get('content-length', 0))
-                block_size = 1024 * 1024
-                
-                with tqdm(total=total_size, unit='B', unit_scale=True, unit_divisor=1024,
-                          desc="Progress", leave=True) as t:
-                    
-                    start_time = time.time()
-                    downloaded_size = 0
-                    
-                    for chunk in r.iter_content(chunk_size=block_size):
-                        if chunk:
-                            f.write(chunk)
-                            downloaded_size += len(chunk)
-                            t.update(len(chunk))
+
+            # Resume support
+            resume_header = {}
+            file_mode = "wb"
+            initial_size = 0
+
+            if os.path.exists(media_path):
+                initial_size = os.path.getsize(media_path)
+                if initial_size > 0:
+                    print(f"{Fore.YELLOW}Resuming from {initial_size / (1024*1024):.2f} MB...{Style.RESET_ALL}")
+                    resume_header = {'Range': f'bytes={initial_size}-'}
+                    file_mode = "ab"
+
+            max_retries = 5
+            for attempt in range(max_retries):
+                try:
+                    r = session.get(media_url, headers=resume_header, stream=True, timeout=120)
+                    r.raise_for_status()
+
+                    total_size = int(r.headers.get('content-length', 0))
+                    if total_size == 0 and 'content-range' in r.headers:
+                        content_range = r.headers.get('content-range', '')
+                        if '/' in content_range:
+                            total_size = int(content_range.split('/')[-1])
+
+                    block_size = 1024 * 1024
+
+                    with open(media_path, file_mode) as f:
+                        with tqdm(total=total_size, initial=0, unit='B', unit_scale=True, unit_divisor=1024,
+                                  desc="Progress", leave=True) as t:
                             
-                            elapsed = time.time() - start_time
-                            if elapsed > 0.5:
-                                speed = downloaded_size / elapsed
-                                t.set_postfix(speed=f"{speed/1024/1024:.2f} MB/s")
+                            start_time = time.time()
+                            downloaded_size = 0
+                            
+                            for chunk in r.iter_content(chunk_size=block_size):
+                                if chunk:
+                                    f.write(chunk)
+                                    chunk_size = len(chunk)
+                                    downloaded_size += chunk_size
+                                    t.update(chunk_size)
+                                    
+                                    elapsed = time.time() - start_time
+                                    if elapsed > 0.5 and downloaded_size > 0:
+                                        speed = downloaded_size / elapsed
+                                        t.set_postfix(speed=f"{speed/1024/1024:.2f} MB/s")
+
+                    # Verify
+                    final_size = os.path.getsize(media_path)
+                    if final_size >= (initial_size + total_size * 0.95):
+                        break
+                    else:
+                        raise Exception("Incomplete download")
+
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        print(f"{Fore.YELLOW}Attempt {attempt+1} failed: {e}. Retrying in {2**attempt}s...{Style.RESET_ALL}")
+                        time.sleep(2 ** attempt)
+                        if os.path.exists(media_path):
+                            initial_size = os.path.getsize(media_path)
+                            resume_header = {'Range': f'bytes={initial_size}-'}
+                            file_mode = "ab"
+                        continue
+                    else:
+                        raise
             
-            file_size_mb = os.path.getsize(media_path) / (1024 * 1024)
-            print(f"{Fore.GREEN}✓ Completed: {media_name} | Size: {file_size_mb:.2f} MB{Style.RESET_ALL}")
+            final_size_mb = os.path.getsize(media_path) / (1024 * 1024)
+            print(f"{Fore.GREEN}✓ Completed: {media_name} | Size: {final_size_mb:.2f} MB{Style.RESET_ALL}")
             
             downloaded_files.append(media_path)
             downloaded += 1
             
-        except requests.exceptions.Timeout:
-            print(f"{Fore.YELLOW}Timeout: {media_name} - Connection lost, will retry...{Style.RESET_ALL}")
-            continue
         except Exception as e:
             print(f"{Fore.YELLOW}Warning: Failed to download {media_name}: {e}{Style.RESET_ALL}")
             continue
